@@ -1,0 +1,98 @@
+# -*- coding: utf-8 -*-
+import atexit
+from pyVim import connect
+from pyVim.connect import  Disconnect
+from pyVmomi import vim
+import ssl
+
+
+class vCenter:
+
+    def __init__(self, host, user, password, sslport):
+
+        try:
+            sslContext = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
+            sslContext.verify_mode = ssl.CERT_NONE
+            self.service_instance = connect.SmartConnect(
+                                                    host=host,
+                                                    user=user,
+                                                    pwd=password,
+                                                    port=sslport,
+                                                    sslContext=sslContext
+                                                    )
+        except Exception as ex:
+            print("Connection  vCenter Error: %s" % ex)
+
+    def getVM(self):
+        service_instance = self.service_instance
+        atexit.register(connect.Disconnect, service_instance)
+        content = service_instance.RetrieveContent()
+        container = content.rootFolder
+        viewType = [vim.VirtualMachine]
+        recursive = True
+        containerView = content.viewManager.CreateContainerView(
+            container, viewType, recursive)
+
+        children = containerView.view
+        vm = []
+        for child in children:
+            vminfo = {}
+            unusedisk = int(long(child.storage.perDatastoreUsage[0].uncommitted)/1024/1024/1024)
+            usedisk = int(child.storage.perDatastoreUsage[0].committed/1024/1024/1024)
+            unshared = int(child.storage.perDatastoreUsage[0].unshared/1024/1024/1024)
+            vminfo[child.config.instanceUuid] = {
+                "name": child.config.name,
+                "地址": child.guest.ipAddress,
+                "内存": child.config.hardware.memoryMB,
+                "CPU": child.config.hardware.numCPU,
+                "空闲大小": unusedisk,
+                "使用大小": usedisk,
+                "未共享": unshared,
+                "磁盘大小": unusedisk + usedisk,
+                "主机名": child.guest.hostName
+            }
+            vm.append(vminfo)
+        return vm
+
+    def getHost(self):
+
+        service_instance = self.service_instance
+        atexit.register(Disconnect, service_instance)
+        content = service_instance.RetrieveContent()
+        cnview = content.viewManager.CreateContainerView(content.rootFolder, [vim.Datastore], True)
+        ds_obj_list = cnview.view
+        data = []
+        for ds in ds_obj_list:
+            summary = ds.summary
+            ds_capacity = summary.capacity
+            ds_freespace = summary.freeSpace
+            ds_uncommitted = summary.uncommitted if summary.uncommitted else 0
+            ds_provisioned = ds_capacity - ds_freespace + ds_uncommitted
+            ds_overp = ds_provisioned - ds_capacity
+            ds_overp_pct = (ds_overp * 100) / ds_capacity \
+                if ds_capacity else 0
+            data_name = str(summary.name)
+            Capacity = int(ds_capacity)
+            Free = int(ds_freespace)
+            Uncommitted = int(ds_uncommitted)
+            Hosts = len(ds.host)
+            vm = len(ds.vm)
+            Provisioned = int(ds_provisioned)
+            if ds_overp > 0:
+                over_thin_ds = int(ds_overp)
+                less_thin_ds = 0
+            else:
+                less_thin_ds = int(ds_overp * -1 )
+                over_thin_ds = 0
+            dsinfo = {}
+            dsinfo["data_name"] = data_name
+            dsinfo["总容量"] = Capacity
+            dsinfo["剩余大小"] = Free
+            dsinfo["未提交大小"] = Uncommitted
+            dsinfo["主机数量"] = Hosts
+            dsinfo["虚拟机数量"] = vm
+            dsinfo["分配大小"] = Provisioned
+            dsinfo["超配大小"] = over_thin_ds
+            dsinfo["未超配大小"] = less_thin_ds
+            data.append(dsinfo)
+        return data
